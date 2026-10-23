@@ -30,8 +30,14 @@ class RequirementRegistry extends EntityRegistry_1.EntityRegistry {
     constructor(rules = RuleRegistry_1.instance) {
         super(Requirement_1.Requirement);
         this._byId = new Map();
+        // Each entry under its subject, for `for`: play asks it (whether a Wonder is obsolete), so it is a lookup rather than
+        //  a scan of every entry. Each bucket is in registration order.
+        this._bySubject = this.index((entry) => entry.subject);
         this._derived = new Map();
         this._derivers = new Map();
+        // When each entry was added, to put the buckets of a subject and its superclasses back in registration order.
+        this._added = new Map();
+        this._nextAdded = 0;
         this._rules = rules;
     }
     /**
@@ -52,11 +58,24 @@ class RequirementRegistry extends EntityRegistry_1.EntityRegistry {
         var _a;
         return (_a = this._byId.get(id)) !== null && _a !== void 0 ? _a : null;
     }
-    /** The entries about `Subject`, or a class it extends, optionally only those of one relation. */
+    /**
+     * The entries about `Subject`, or a class it extends, optionally only those of one relation, in the order they were
+     * added.
+     */
     for(Subject, relation) {
-        return this.filter((entry) => (relation === undefined || entry.relation === relation) &&
-            (entry.subject === Subject ||
-                Object.prototype.isPrototypeOf.call(entry.subject, Subject)));
+        const found = [];
+        for (let Class = Subject; typeof Class === 'function'; Class = Object.getPrototypeOf(Class)) {
+            this._bySubject
+                .get(Class)
+                .forEach((entry) => {
+                if (relation === undefined || entry.relation === relation) {
+                    found.push(entry);
+                }
+            });
+        }
+        return found.length > 1
+            ? found.sort((a, b) => this._added.get(a) - this._added.get(b))
+            : found;
     }
     /** The entries that name `target`: what an advance leads to, what a Wonder makes obsolete. */
     leadsTo(target, relation) {
@@ -98,6 +117,7 @@ class RequirementRegistry extends EntityRegistry_1.EntityRegistry {
     commit(derive, prepared) {
         prepared.forEach(([entry, rules]) => {
             this._byId.set(entry.id, entry);
+            this._added.set(entry, this._nextAdded++);
             this._derivers.set(entry, derive);
             this._derived.set(entry, rules);
         });
@@ -122,6 +142,7 @@ class RequirementRegistry extends EntityRegistry_1.EntityRegistry {
         this._byId.delete(entry.id);
         this._derivers.delete(entry);
         this._derived.delete(entry);
+        this._added.delete(entry);
     }
     // `entries` as `Requirement`s, each with the rules `derive` makes from it, once nothing about them would be refused:
     //  an id held by another entry (other than those being replaced) or given twice, or a rule id already taken by a

@@ -32,8 +32,11 @@ export declare class DuplicateRequirementIdError extends Error {}
  */
 export declare class RequirementRegistry extends EntityRegistry<Requirement> {
   private _byId;
+  private _bySubject;
   private _derived;
   private _derivers;
+  private _added;
+  private _nextAdded;
   private _rules;
   constructor(rules?: RuleRegistry);
   /**
@@ -46,7 +49,10 @@ export declare class RequirementRegistry extends EntityRegistry<Requirement> {
   register(...entries: Requirement[]): void;
   /** The entry registered as `id`, or `null`. */
   getById(id: string): Requirement | null;
-  /** The entries about `Subject`, or a class it extends, optionally only those of one relation. */
+  /**
+   * The entries about `Subject`, or a class it extends, optionally only those of one relation, in the order they were
+   * added.
+   */
   for(Subject: IConstructor, relation?: Relation): Requirement[];
   /** The entries that name `target`: what an advance leads to, what a Wonder makes obsolete. */
   leadsTo(target: Target, relation?: Relation): Requirement[];
