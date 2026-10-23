@@ -32,6 +32,11 @@ declare global {
     obsoletedBy: true;
     /** What takes its place once it is obsolete. Only says so: no rule is made from it. */
     replacedBy: true;
+    /**
+     * Works better while the targets are met (a Temple with Mysticism). Only says so: the owning package's own rules
+     * play the effect, as the entry can't say by how much.
+     */
+    enhancedBy: true;
   }
 }
 export type Relation = keyof RequirementRelationMap;
@@ -40,7 +45,10 @@ export interface IRequirementOptions {
   mode?: 'all' | 'any';
   /** Whose possession of the targets counts: the player's unless it says otherwise. */
   range?: Range;
-  /** Only where the subject is on one of these, e.g. a road on a River needing Bridge Building. */
+  /**
+   * Only where the subject is on one of these, e.g. the terrains a tile improvement can be built on, or a road on a
+   * River needing Bridge Building.
+   */
   where?: IConstructor[];
 }
 export interface IRequirement extends IRequirementOptions {

@@ -90,6 +90,17 @@ describe('table', (): void => {
     expect(entry.range).equal('player');
     expect(entry.where).equal(null);
   });
+
+  it('keeps where an entry applies, and describes what something is enhanced by', (): void => {
+    const [onBronze] = table('test:where', 'requires', [[Spearman, Iron]], {
+        where: [Bronze],
+      }),
+      [enhanced] = table('test:enhanced', 'enhancedBy', [[Spearman, Iron]]);
+
+    expect(onBronze.where).eql([Bronze]);
+    expect(Object.isFrozen(onBronze.where)).true;
+    expect(enhanced.relation).equal('enhancedBy');
+  });
 });
 
 describe('met', (): void => {
