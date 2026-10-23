@@ -220,16 +220,117 @@ describe('RequirementRegistry', (): void => {
     ).eql(['test:build/requires/Spearman', 'test:unit/replaced-by/Spearman']);
   });
 
-  it('removes an entry whose rule a plugin has already replaced, leaving the replacement', (): void => {
-    const replacement = new Buildable(
+  it('takes a plain object as an entry, as a plugin might write one', (): void => {
+    const existing = requirements.getById('test:build/requires/Musketman')!;
+
+    requirements.replace('test:build/requires/Musketman', {
+      id: existing.id,
+      subject: existing.subject,
+      relation: existing.relation,
+      targets: [Gunpowder, Iron],
+    });
+
+    expect(requirements.getById(existing.id)).instanceOf(Requirement);
+    expect(canBuild(rules, Musketman, [Gunpowder])).false;
+    expect(canBuild(rules, Musketman, [Gunpowder, Iron])).true;
+  });
+
+  it("owns its rules' ids: removing or replacing it takes out a plugin's rule put in their place", (): void => {
+    rules.replace(
       'test:build/obsolete/Spearman',
-      new Effect((): boolean => true)
+      new Buildable(
+        'test:build/obsolete/Spearman',
+        new Effect((): boolean => false)
+      )
+    );
+    requirements.replace(
+      'test:build/obsolete/Spearman',
+      ...table('test:build/obsolete', 'obsoletedBy', [[Spearman, Iron]])
     );
 
-    rules.replace('test:build/obsolete/Spearman', replacement);
+    expect(
+      rules.filter(
+        (rule: Rule): boolean => rule.id() === 'test:build/obsolete/Spearman'
+      )
+    ).eql(requirements.rulesFor('test:build/obsolete/Spearman'));
+    expect(canBuild(rules, Spearman, [Bronze])).true;
+    expect(canBuild(rules, Spearman, [Bronze, Iron])).false;
+
+    rules.replace(
+      'test:build/obsolete/Spearman',
+      new Buildable(
+        'test:build/obsolete/Spearman',
+        new Effect((): boolean => false)
+      )
+    );
     requirements.remove('test:build/obsolete/Spearman');
 
-    expect(rules.getById('test:build/obsolete/Spearman')).equal(replacement);
+    expect(rules.getById('test:build/obsolete/Spearman')).equal(null);
+    expect(canBuild(rules, Spearman, [Bronze, Iron])).true;
+  });
+
+  it('leaves everything as it was when a change is refused', (): void => {
+    const before = () => [
+      requirements.entries().map((entry: Requirement) => entry.id),
+      rules.entries().map((rule: Rule) => rule.id()),
+    ];
+    const snapshot = before();
+
+    // Two replacements under one id.
+    expect((): void =>
+      requirements.replace(
+        'test:build/requires/Musketman',
+        ...table('test:build/requires', 'requires', [
+          [Musketman, Iron],
+          [Musketman, Bronze],
+        ])
+      )
+    ).throw(DuplicateRequirementIdError);
+    // A rule id another rule already has.
+    rules.register(new Buildable('test:taken/Trireme', new Effect(() => true)));
+    snapshot[1].push('test:taken/Trireme');
+    expect((): void =>
+      requirements.add(
+        toBuildable,
+        ...table('test:taken', 'requires', [[Trireme, Iron]])
+      )
+    ).throw(/already has/);
+    // Something that is not an entry at all.
+    expect((): void =>
+      requirements.replace('test:build/requires/Musketman', {} as any)
+    ).throw(TypeError, /needs an id, a subject class and a list of targets/);
+
+    expect(before()).eql(snapshot);
+    expect(canBuild(rules, Musketman, [Gunpowder])).true;
+  });
+
+  it('unregisters the entries it holds, by identity, and ignores the others', (): void => {
+    const [lookalike] = table('test:build/requires', 'requires', [
+      [Spearman, Bronze],
+    ]);
+
+    requirements.unregister(lookalike);
+
+    expect(requirements.getById('test:build/requires/Spearman')).not.equal(
+      null
+    );
+
+    requirements.unregister(
+      requirements.getById('test:build/requires/Spearman')!
+    );
+
+    expect(requirements.getById('test:build/requires/Spearman')).equal(null);
+    expect(rules.getById('test:build/requires/Spearman')).equal(null);
+  });
+
+  it('holds entries that cannot be changed in place', (): void => {
+    const entry = requirements.getById('test:build/requires/Musketman')!;
+
+    expect(Object.isFrozen(entry)).true;
+    expect(Object.isFrozen(entry.targets)).true;
+    expect((): void => {
+      (entry.targets as Target[]).push(Iron);
+    }).throw(TypeError);
   });
 
   it('refuses an id it already holds, or two at once', (): void => {
@@ -258,6 +359,10 @@ describe('RequirementRegistry', (): void => {
     expect((): void =>
       requirements.replace('test:build/requires/Spaerman')
     ).throw(UnknownRequirementError);
+  });
+
+  it('says which rule registry it makes rules in', (): void => {
+    expect(requirements.ruleRegistry()).equal(rules);
   });
 
   it('keeps its own rules apart from another game', (): void => {

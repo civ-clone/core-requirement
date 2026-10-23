@@ -1,5 +1,12 @@
-import { Condition, Relation, Requirement, Target } from './Requirement';
 import {
+  Condition,
+  IRequirement,
+  Relation,
+  Requirement,
+  Target,
+} from './Requirement';
+import {
+  DuplicateRuleIdError,
   RuleRegistry,
   instance as ruleRegistryInstance,
 } from '@civ-clone/core-rule/RuleRegistry';
@@ -26,7 +33,15 @@ export class DuplicateRequirementIdError extends Error {}
  * The rules are what play runs, under the entries' own ids, exactly as if they had been written out; this registry is
  * only read when something asks about the graph (the civilopedia, "why can't I build this?"). Changing an entry
  * changes its rules with it, so a plugin edits one place and the civilopedia never says one thing while the game does
- * another. `rules.replace` on a derived rule still works, as the way out for behaviour the graph can't say.
+ * another.
+ *
+ * `rules.replace` on a derived rule still works, as the way out for behaviour the graph can't say. The entry still owns
+ * the ids of the rules it made, though: replacing or removing the entry takes out whatever rule is registered under
+ * them by then, the plugin's included, so the last change made wins. (A plugin's replacement with no id can't be found
+ * that way, and stays.)
+ *
+ * Every change is checked in full before anything is touched, so one that is refused leaves the registry, and the
+ * game's rules, as they were.
  */
 export class RequirementRegistry extends EntityRegistry<Requirement> {
   private _byId: Map<string, Requirement> = new Map();
@@ -42,20 +57,16 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
 
   /**
    * Holds `entries` and registers the rules `derive` makes from each, in order. `derive` is `null` for an entry whose
-   * rule is written by hand (a state condition), which the entry only describes.
+   * rule is written by hand (a state condition), which the entry only describes. An entry may be given as a plain
+   * object, and is held as a `Requirement`.
    */
-  add(derive: Deriver | null, ...entries: Requirement[]): void {
-    this.refuseDuplicates(entries);
+  add(
+    derive: Deriver | null,
+    ...entries: (Requirement | IRequirement)[]
+  ): void {
+    const prepared = this.prepare(derive, entries, []);
 
-    super.register(...entries);
-
-    const rules = entries.flatMap((entry: Requirement): Rule[] =>
-      this.derive(entry, derive)
-    );
-
-    // In one call, so the rules land in the order the entries were given, as a spread of them into
-    //  `rules.register` always did.
-    this._rules.register(...rules);
+    this.commit(derive, prepared);
   }
 
   /** As `add`, with no rules made: the entries only describe. */
@@ -95,23 +106,13 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
    * Swaps the entry registered as `id` for `entries`, and its rules for the ones the same deriver makes from them. The
    * replacements needn't keep the id. Throws for an id nothing is registered as, as a mistyped plugin should.
    */
-  replace(id: string, ...entries: Requirement[]): void {
+  replace(id: string, ...entries: (Requirement | IRequirement)[]): void {
     const existing = this.require(id),
-      derive = this._derivers.get(existing) ?? null;
-
-    this.refuseDuplicates(
-      entries.filter((entry: Requirement): boolean => entry.id !== id)
-    );
+      derive = this._derivers.get(existing) ?? null,
+      prepared = this.prepare(derive, entries, [existing]);
 
     this.drop(existing);
-
-    super.register(...entries);
-
-    this._rules.register(
-      ...entries.flatMap((entry: Requirement): Rule[] =>
-        this.derive(entry, derive)
-      )
-    );
+    this.commit(derive, prepared);
   }
 
   /** Drops the entry registered as `id` and the rules made from it. Throws for an id nothing is registered as. */
@@ -119,9 +120,11 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
     this.drop(this.require(id));
   }
 
-  /** As `remove`, for each of `entries`. */
+  /** As `remove`, for those of `entries` it holds: like any registry, it ignores the others. */
   unregister(...entries: Requirement[]): void {
-    entries.forEach((entry: Requirement): void => this.remove(entry.id));
+    entries
+      .filter((entry: Requirement): boolean => this._derivers.has(entry))
+      .forEach((entry: Requirement): void => this.drop(entry));
   }
 
   /** The rules made from the entry registered as `id`: none for one that only describes. */
@@ -129,20 +132,47 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
     return [...(this._derived.get(this.require(id)) ?? [])];
   }
 
-  private derive(entry: Requirement, derive: Deriver | null): Rule[] {
-    const rules = derive === null ? [] : derive(entry, this);
-
-    this._byId.set(entry.id, entry);
-    this._derivers.set(entry, derive);
-    this._derived.set(entry, rules);
-
-    return rules;
+  /** The rule registry the entries' rules go into: a game's own. */
+  ruleRegistry(): RuleRegistry {
+    return this._rules;
   }
 
+  // Held and registered, once `prepare` has checked them.
+  private commit(
+    derive: Deriver | null,
+    prepared: [Requirement, Rule[]][]
+  ): void {
+    prepared.forEach(([entry, rules]): void => {
+      this._byId.set(entry.id, entry);
+      this._derivers.set(entry, derive);
+      this._derived.set(entry, rules);
+    });
+
+    super.register(...prepared.map(([entry]) => entry));
+
+    // In one call, so the rules land in the order the entries were given, as a spread of them into `rules.register`
+    //  always did.
+    this._rules.register(...prepared.flatMap(([, rules]) => rules));
+  }
+
+  // Taken out with its rules: the ones it made, and whatever is registered under their ids by now.
   private drop(entry: Requirement): void {
-    const rules = (this._derived.get(entry) ?? []).filter((rule: Rule) =>
-      this._rules.includes(rule)
-    );
+    const ruleIds = (this._derived.get(entry) ?? [])
+        .map((rule: Rule): string | null => rule.id())
+        .filter((id: string | null): id is string => id !== null),
+      rules = [
+        ...(this._derived.get(entry) ?? []),
+        ...ruleIds.map((id: string): Rule | null => this._rules.getById(id)),
+      ].filter(
+        (
+          rule: Rule | null,
+          index: number,
+          all: (Rule | null)[]
+        ): rule is Rule =>
+          rule !== null &&
+          this._rules.includes(rule) &&
+          all.indexOf(rule) === index
+      );
 
     this._rules.unregister(...rules);
 
@@ -153,11 +183,31 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
     this._derived.delete(entry);
   }
 
-  private refuseDuplicates(entries: Requirement[]): void {
-    const seen = new Set<string>();
+  // `entries` as `Requirement`s, each with the rules `derive` makes from it, once nothing about them would be refused:
+  //  an id held by another entry (other than those being replaced) or given twice, or a rule id already taken by a
+  //  rule that isn't the replaced entries'.
+  private prepare(
+    derive: Deriver | null,
+    entries: (Requirement | IRequirement)[],
+    replacing: Requirement[]
+  ): [Requirement, Rule[]][] {
+    const requirements = entries.map(
+        (entry: Requirement | IRequirement): Requirement =>
+          entry instanceof Requirement ? entry : new Requirement(entry)
+      ),
+      freedEntryIds = replacing.map((entry: Requirement): string => entry.id),
+      freedRuleIds = replacing.flatMap(
+        (entry: Requirement): (string | null)[] =>
+          (this._derived.get(entry) ?? []).map((rule: Rule) => rule.id())
+      ),
+      seenEntryIds = new Set<string>(),
+      seenRuleIds = new Set<string>();
 
-    entries.forEach((entry: Requirement): void => {
-      if (this._byId.has(entry.id) || seen.has(entry.id)) {
+    return requirements.map((entry: Requirement): [Requirement, Rule[]] => {
+      if (
+        seenEntryIds.has(entry.id) ||
+        (this._byId.has(entry.id) && !freedEntryIds.includes(entry.id))
+      ) {
         // As `RuleRegistry`: two entries under one id would make `replace` and `remove` ambiguous.
         throw new DuplicateRequirementIdError(
           `Two requirements claim the id '${entry.id}'. Ids address a single requirement, so one of them could ` +
@@ -165,7 +215,31 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
         );
       }
 
-      seen.add(entry.id);
+      seenEntryIds.add(entry.id);
+
+      const rules = derive === null ? [] : derive(entry, this);
+
+      rules.forEach((rule: Rule): void => {
+        const ruleId = rule.id();
+
+        if (ruleId === null) {
+          return;
+        }
+
+        if (
+          seenRuleIds.has(ruleId) ||
+          (this._rules.getById(ruleId) !== null &&
+            !freedRuleIds.includes(ruleId))
+        ) {
+          throw new DuplicateRuleIdError(
+            `The rules made from '${entry.id}' claim the id '${ruleId}', which another rule already has.`
+          );
+        }
+
+        seenRuleIds.add(ruleId);
+      });
+
+      return [entry, rules];
     });
   }
 
