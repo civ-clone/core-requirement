@@ -361,6 +361,34 @@ describe('RequirementRegistry', (): void => {
     ).throw(UnknownRequirementError);
   });
 
+  it("finds a subject's entries and its superclasses' in the order they were added, and forgets removed ones", (): void => {
+    requirements.add(
+      null,
+      ...table('test:a', 'requires', [[Trireme, Iron]]),
+      ...table('test:b', 'requires', [[Naval, Bronze]]),
+      ...table('test:c', 'obsoletedBy', [[Trireme, Gunpowder]]),
+      ...table('test:d', 'requires', [[Unit, Bronze]])
+    );
+
+    expect(requirements.for(Trireme).map((entry: Requirement) => entry.id)).eql(
+      ['test:a/Trireme', 'test:b/Naval', 'test:c/Trireme', 'test:d/Unit']
+    );
+    expect(
+      requirements
+        .for(Trireme, 'requires')
+        .map((entry: Requirement) => entry.id)
+    ).eql(['test:a/Trireme', 'test:b/Naval', 'test:d/Unit']);
+
+    requirements.remove('test:b/Naval');
+
+    expect(requirements.for(Trireme).map((entry: Requirement) => entry.id)).eql(
+      ['test:a/Trireme', 'test:c/Trireme', 'test:d/Unit']
+    );
+    expect(requirements.for(Naval).map((entry: Requirement) => entry.id)).eql([
+      'test:d/Unit',
+    ]);
+  });
+
   it('says which rule registry it makes rules in', (): void => {
     expect(requirements.ruleRegistry()).equal(rules);
   });

@@ -45,8 +45,14 @@ export class DuplicateRequirementIdError extends Error {}
  */
 export class RequirementRegistry extends EntityRegistry<Requirement> {
   private _byId: Map<string, Requirement> = new Map();
+  // Each entry under its subject, for `for`: play asks it (whether a Wonder is obsolete), so it is a lookup rather than
+  //  a scan of every entry. Each bucket is in registration order.
+  private _bySubject = this.index((entry: Requirement) => entry.subject);
   private _derived: Map<Requirement, Rule[]> = new Map();
   private _derivers: Map<Requirement, Deriver | null> = new Map();
+  // When each entry was added, to put the buckets of a subject and its superclasses back in registration order.
+  private _added: Map<Requirement, number> = new Map();
+  private _nextAdded: number = 0;
   private _rules: RuleRegistry;
 
   constructor(rules: RuleRegistry = ruleRegistryInstance) {
@@ -79,14 +85,33 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
     return this._byId.get(id) ?? null;
   }
 
-  /** The entries about `Subject`, or a class it extends, optionally only those of one relation. */
+  /**
+   * The entries about `Subject`, or a class it extends, optionally only those of one relation, in the order they were
+   * added.
+   */
   for(Subject: IConstructor, relation?: Relation): Requirement[] {
-    return this.filter(
-      (entry: Requirement): boolean =>
-        (relation === undefined || entry.relation === relation) &&
-        (entry.subject === Subject ||
-          Object.prototype.isPrototypeOf.call(entry.subject, Subject))
-    );
+    const found: Requirement[] = [];
+
+    for (
+      let Class: unknown = Subject;
+      typeof Class === 'function';
+      Class = Object.getPrototypeOf(Class)
+    ) {
+      this._bySubject
+        .get(Class as IConstructor)
+        .forEach((entry: Requirement): void => {
+          if (relation === undefined || entry.relation === relation) {
+            found.push(entry);
+          }
+        });
+    }
+
+    return found.length > 1
+      ? found.sort(
+          (a: Requirement, b: Requirement): number =>
+            this._added.get(a)! - this._added.get(b)!
+        )
+      : found;
   }
 
   /** The entries that name `target`: what an advance leads to, what a Wonder makes obsolete. */
@@ -144,6 +169,7 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
   ): void {
     prepared.forEach(([entry, rules]): void => {
       this._byId.set(entry.id, entry);
+      this._added.set(entry, this._nextAdded++);
       this._derivers.set(entry, derive);
       this._derived.set(entry, rules);
     });
@@ -181,6 +207,7 @@ export class RequirementRegistry extends EntityRegistry<Requirement> {
     this._byId.delete(entry.id);
     this._derivers.delete(entry);
     this._derived.delete(entry);
+    this._added.delete(entry);
   }
 
   // `entries` as `Requirement`s, each with the rules `derive` makes from it, once nothing about them would be refused:
